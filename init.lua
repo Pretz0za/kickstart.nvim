@@ -85,7 +85,7 @@ P.S. You can delete this when you're done too. It's your config now! :)
 --]]
 
 -- Swap file issue fix:
-vim.opt.directory = { vim.fn.expand '~/.local/state/nvim/swap//' }
+vim.opt.directory = { vim.fn.expand '~/.vim/temp//' }
 vim.fn.mkdir(vim.opt.directory:get()[1], 'p')
 
 -- Set <space> as the leader key
