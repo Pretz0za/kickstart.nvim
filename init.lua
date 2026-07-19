@@ -480,6 +480,16 @@ require('lazy').setup({
       vim.keymap.set('n', '<leader>sn', function()
         builtin.find_files { cwd = vim.fn.stdpath 'config' }
       end, { desc = '[S]earch [N]eovim files' })
+
+      -- One entry per conflict marker; files with multiple conflicts appear multiple times
+      vim.keymap.set('n', '<leader>sc', function()
+        builtin.grep_string(require('telescope.themes').get_dropdown {
+          prompt_title = 'Merge Conflicts',
+          search = '^<<<<<<<',
+          use_regex = true,
+          winblend = 10,
+        })
+      end, { desc = '[S]earch merge [C]onflicts' })
     end,
   },
 
