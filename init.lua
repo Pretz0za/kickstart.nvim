@@ -95,6 +95,11 @@ vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
 vim.opt.termguicolors = true
 
+-- PATH keeps go@1.25 for day-to-day work, but Homebrew's Go sets GOTOOLCHAIN=local,
+-- which blocks Mason from building tools (e.g. gopls) that need a newer toolchain.
+-- Override only inside Neovim so installs can fetch/use Go 1.26+ on demand.
+vim.env.GOTOOLCHAIN = 'auto'
+
 -- Set to true if you have a Nerd Font installed and selected in the terminal
 vim.g.have_nerd_font = true
 
@@ -197,6 +202,82 @@ vim.keymap.set('t', '<Esc><Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' }
 
 vim.keymap.set('n', '<leader>p', '<cmd>Neotree reveal=true toggle=true<Cr>')
 
+-- [C]laude [P]rompt: open a small centered input, run `claude -p` on <CR>
+local function open_claude_prompt(context_lines)
+  local prefill = context_lines and vim.list_extend(vim.deepcopy(context_lines), { '' }) or {}
+
+  local width = 60
+  local height = math.max(1, math.min(15, #prefill))
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = 'nofile'
+
+  if #prefill > 0 then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, prefill)
+  end
+
+  local ui = vim.api.nvim_list_uis()[1]
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = 'editor',
+    width = width,
+    height = height,
+    row = math.floor((ui.height - height) / 2),
+    col = math.floor((ui.width - width) / 2),
+    style = 'minimal',
+    border = 'rounded',
+    title = ' Claude Prompt ',
+    title_pos = 'center',
+  })
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  local function submit()
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local prompt = table.concat(lines, '\n')
+    close()
+    if prompt == '' then
+      return
+    end
+    vim.cmd 'botright 15split'
+    local term_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(0, term_buf)
+    vim.fn.termopen { 'claude', '-p', '--tools', '', prompt }
+    vim.cmd.startinsert()
+  end
+
+  vim.keymap.set({ 'i', 'n' }, '<CR>', submit, { buffer = buf })
+  vim.keymap.set('n', '<Esc>', close, { buffer = buf })
+
+  vim.cmd.startinsert()
+  vim.api.nvim_win_set_cursor(win, { #prefill > 0 and #prefill or 1, 0 })
+end
+
+vim.keymap.set('n', '<leader>cp', function()
+  open_claude_prompt()
+end, { desc = '[C]laude [P]rompt' })
+
+vim.keymap.set('v', '<leader>cp', function()
+  vim.cmd('normal! ' .. vim.api.nvim_replace_termcodes('<Esc>', true, false, true))
+  local start_pos = vim.fn.getpos "'<"
+  local end_pos = vim.fn.getpos "'>"
+  local lines = vim.fn.getline(start_pos[2], end_pos[2])
+  if #lines == 0 then
+    return
+  end
+  local start_col = start_pos[3]
+  local end_col = math.min(end_pos[3], #lines[#lines])
+  if #lines == 1 then
+    lines[1] = lines[1]:sub(start_col, end_col)
+  else
+    lines[1] = lines[1]:sub(start_col)
+    lines[#lines] = lines[#lines]:sub(1, end_col)
+  end
+  open_claude_prompt(lines)
+end, { desc = '[C]laude [P]rompt with selection' })
+
 -- TIP: Disable arrow keys in normal mode
 vim.keymap.set('n', '<left>', '<cmd>echo "Use h to move!!"<CR>')
 vim.keymap.set('n', '<right>', '<cmd>echo "Use l to move!!"<CR>')
@@ -235,6 +316,15 @@ vim.api.nvim_create_autocmd('FileType', {
     pcall(vim.treesitter.start)
   end,
 })
+
+vim.api.nvim_create_user_command('GoLintFix', function()
+  vim.fn.jobstart({ 'golangci-lint', 'run', '--fix', './...' }, {
+    cwd = vim.fn.getcwd(),
+    on_exit = function()
+      vim.cmd 'checktime'
+    end,
+  })
+end, {})
 
 -- [[ Install `lazy.nvim` plugin manager ]]
 --    See `:help lazy.nvim.txt` or https://github.com/folke/lazy.nvim for more info
@@ -703,8 +793,22 @@ require('lazy').setup({
       --        For example, to see the options for `lua_ls`, you could go to: https://luals.github.io/wiki/settings/
       local servers = {
         clangd = {},
-        gopls = {},
-        -- pyright = {},
+        gopls = {
+          settings = {
+            gopls = {
+              gofumpt = true,
+              staticcheck = false, -- let golangci-lint own lint diagnostics
+            },
+          },
+        },
+        golangci_lint_ls = {
+          -- Default root_markers includes 'go.mod', which roots a new client
+          -- inside GOROOT/stdlib or any go.mod'd dependency you jump into
+          -- (go-to-def, etc), spawning extra golangci-lint-langserver
+          -- processes that never get cleaned up. Only your own project has
+          -- .golangci.yml/.git, so anchor to those instead.
+          root_markers = { '.golangci.yml', '.golangci.yaml', '.golangci.toml', '.golangci.json', '.git' },
+        }, -- pyright = {},
         -- rust_analyzer = {},
         -- ... etc. See `:help lspconfig-all` for a list of all the pre-configured LSPs
         --
@@ -712,7 +816,7 @@ require('lazy').setup({
         --    https://github.com/pmizio/typescript-tools.nvim
         --
         -- But for many setups, the LSP (`ts_ls`) will work just fine
-        -- ts_ls = {},
+        ts_ls = {},
         --
 
         lua_ls = {
@@ -778,7 +882,20 @@ require('lazy').setup({
       {
         '<leader>f',
         function()
-          require('conform').format { async = true, lsp_format = 'fallback' }
+          local bufnr = vim.api.nvim_get_current_buf()
+          if vim.bo[bufnr].filetype == 'go' then
+            -- Match `make lint`: gofumpt + golangci formatters, then linter autofixes
+            -- (tagalign, etc.). Autofixes need the real package on disk.
+            require('conform').format {
+              bufnr = bufnr,
+              async = false,
+              timeout_ms = 10000,
+              lsp_format = 'never',
+            }
+            vim.cmd 'silent! write'
+          else
+            require('conform').format { async = true, lsp_format = 'fallback' }
+          end
         end,
         mode = '',
         desc = '[F]ormat buffer',
@@ -790,15 +907,20 @@ require('lazy').setup({
         -- Disable "format_on_save lsp_fallback" for languages that don't
         -- have a well standardized coding style. You can add additional
         -- languages here or re-enable it for the disabled ones.
-        local disable_filetypes = { c = true, cpp = true, go = true }
+        local disable_filetypes = { c = true, cpp = true }
         if disable_filetypes[vim.bo[bufnr].filetype] then
           return nil
-        else
+        end
+        if vim.bo[bufnr].filetype == 'go' then
           return {
-            timeout_ms = 500,
-            lsp_format = 'fallback',
+            timeout_ms = 10000,
+            lsp_format = 'never',
           }
         end
+        return {
+          timeout_ms = 500,
+          lsp_format = 'fallback',
+        }
       end,
       formatters_by_ft = {
         lua = { 'stylua' },
@@ -808,7 +930,8 @@ require('lazy').setup({
         -- You can use 'stop_after_first' to run the first available formatter from the list
         javascript = { 'prettier', stop_after_first = true },
         javascriptreact = { 'prettier', stop_after_first = true },
-        go = { 'goimports', 'gofumpt', 'golines' },
+        -- gofumpt (Makefile) + golangci-lint fmt (reads .golangci.yml gci sections)
+        go = { 'gofumpt', 'golangci-lint' },
         -- typescript = { 'prettier', stop_after_first = true },
         -- typescriptreat = { 'prettier', stop_after_first = true },
       },
@@ -1029,22 +1152,31 @@ require('lazy').setup({
   },
   { -- Highlight, edit, and navigate code
     'nvim-treesitter/nvim-treesitter',
+    branch = 'main',
+    lazy = false,
     build = ':TSUpdate',
-    main = 'nvim-treesitter.config', -- Sets main module to use for opts
-    -- [[ Configure Treesitter ]] See `:help nvim-treesitter`
-    opts = {
-      ensure_installed = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' },
-      -- Autoinstall languages that are not installed
-      auto_install = true,
-      highlight = {
-        enable = true,
-        -- Some languages depend on vim's regex highlighting system (such as Ruby) for indent rules.
-        --  If you are experiencing weird indenting issues, add the language to
-        --  the list of additional_vim_regex_highlighting and disabled languages for indent.
-        additional_vim_regex_highlighting = { 'ruby' },
-      },
-      indent = { enable = true, disable = { 'ruby' } },
-    },
+    -- NOTE: this is the rewritten `main` branch of nvim-treesitter, which is a different
+    -- plugin from the old `master` branch. It has no `opts` table: `ensure_installed`,
+    -- `auto_install`, `highlight`, and `indent` are not read by `setup()` here, they only
+    -- existed in the old API. Parsers must be installed explicitly, and highlighting is
+    -- enabled globally by the `vim.treesitter.start()` FileType autocmd above.
+    config = function()
+      require('nvim-treesitter').install {
+        'bash',
+        'c',
+        'diff',
+        'go',
+        'html',
+        'lua',
+        'luadoc',
+        'markdown',
+        'markdown_inline',
+        'python',
+        'query',
+        'vim',
+        'vimdoc',
+      }
+    end,
     -- There are additional nvim-treesitter modules that you can use to interact
     -- with nvim-treesitter. You should go explore a few and see what interests you:
     --
@@ -1120,13 +1252,17 @@ require('lazy').setup({
         harpoon.ui:toggle_quick_menu(harpoon:list())
       end, { desc = '[H]arpoon [S]how menu (toggle)' }) --
 
-      vim.keymap.set('n', '<leader>hn', function()
+      vim.keymap.set('n', '<leader>hc', function()
         harpoon:list():add()
-      end, { desc = '[H]arpoon [N]ew Anchor (curr file)' }) --
+      end, { desc = '[H]arpoon [C]reate anchor (curr file)' }) --
 
-      vim.keymap.set('n', '<leader>ha', function()
+      vim.keymap.set('n', '<leader>hp', function()
+        harpoon:list():prev { ui_nav_wrap = true }
+      end, { desc = '[H]arpoon [P]revious' }) --
+
+      vim.keymap.set('n', '<leader>hn', function()
         harpoon:list():next { ui_nav_wrap = true }
-      end, { desc = '[H]arpoon previous' }) --
+      end, { desc = '[H]arpoon [N]ext' }) --
 
       vim.keymap.set('n', '<leader>hf', function()
         harpoon:list():prev { ui_nav_wrap = true }
@@ -1146,6 +1282,43 @@ require('lazy').setup({
       vim.keymap.set('n', '<leader>hr', function()
         harpoon:list():select(4)
       end, { desc = '[H]arpoon goto anchor #4' })
+    end,
+  },
+  {
+    'hat0uma/csvview.nvim',
+    ---@module "csvview"
+    ---@type CsvView.Options
+    opts = {
+      parser = { comments = { '#', '//' } },
+      keymaps = {
+        -- Text objects for selecting fields
+        textobject_field_inner = { 'if', mode = { 'o', 'x' } },
+        textobject_field_outer = { 'af', mode = { 'o', 'x' } },
+        -- Excel-like navigation:
+        -- Use <Tab> and <S-Tab> to move horizontally between fields.
+        -- Use <Enter> and <S-Enter> to move vertically between rows and place the cursor at the end of the field.
+        -- Note: In terminals, you may need to enable CSI-u mode to use <S-Tab> and <S-Enter>.
+        jump_next_field_end = { '<Tab>', mode = { 'n', 'v' } },
+        jump_prev_field_end = { '<S-Tab>', mode = { 'n', 'v' } },
+        jump_next_row = { '<Enter>', mode = { 'n', 'v' } },
+        jump_prev_row = { '<S-Enter>', mode = { 'n', 'v' } },
+      },
+    },
+    cmd = { 'CsvViewEnable', 'CsvViewDisable', 'CsvViewToggle' },
+    ft = 'csv',
+    config = function(_, opts)
+      require('csvview').setup(opts)
+      vim.api.nvim_create_autocmd('FileType', {
+        pattern = 'csv',
+        callback = function()
+          vim.cmd 'CsvViewEnable display_mode=border'
+        end,
+      })
+      -- the buffer that triggered this `ft`-based load already fired its
+      -- FileType event before the autocmd above existed, so enable it here too
+      if vim.bo.filetype == 'csv' then
+        vim.cmd 'CsvViewEnable display_mode=border'
+      end
     end,
   },
   {
@@ -1182,6 +1355,36 @@ require('lazy').setup({
 require('lint').linters_by_ft = {
   go = { 'golangcilint' },
 }
+
+-- golangci-lint --fix needs the real package on disk (temp files fail).
+-- tagalign / other autofixes are linter fixes, not formatters — run after write.
+vim.api.nvim_create_autocmd('BufWritePost', {
+  pattern = '*.go',
+  group = vim.api.nvim_create_augroup('go_golangci_fix', { clear = true }),
+  callback = function(args)
+    local file = args.file
+    if file == '' then
+      return
+    end
+    local root = vim.fs.root(file, { 'go.mod', '.golangci.yml' })
+    if not root then
+      return
+    end
+    local pkg = vim.fs.dirname(file)
+    vim.system({ 'golangci-lint', 'run', '--fix', '--allow-parallel-runners', pkg }, {
+      cwd = root,
+      text = true,
+    }, function()
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(args.buf) then
+          return
+        end
+        vim.cmd.checktime(args.buf)
+        pcall(require('lint').try_lint, args.buf)
+      end)
+    end)
+  end,
+})
 
 -- The line beneath this is called `modeline`. See `:help modeline`
 -- vim: ts=2 sts=2 sw=2 et
