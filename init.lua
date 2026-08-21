@@ -1047,6 +1047,7 @@ require('lazy').setup({
             },
             treesitter = { 'lsp' },
           },
+          max_height = 50,
         },
       },
       sources = {
