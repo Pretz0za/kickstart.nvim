@@ -854,12 +854,19 @@ require('lazy').setup({
       local ensure_installed = vim.tbl_keys(servers or {})
       vim.list_extend(ensure_installed, {
         'stylua', -- Used to format Lua code
+        'jdtls', -- Java language server, set up manually in kickstart.plugins.jdtls
+        'vscode-spring-boot-tools', -- jdtls bundle jar used by kickstart.plugins.spring-boot
       })
       require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
       require('mason-lspconfig').setup {
         ensure_installed = {}, -- explicitly set to an empty table (Kickstart populates installs via mason-tool-installer)
         automatic_installation = false,
+        -- jdtls is started manually via a FileType autocmd (see kickstart.plugins.jdtls),
+        -- so it must not also be auto-enabled here or it'll double-start.
+        automatic_enable = {
+          exclude = { 'jdtls' },
+        },
         handlers = {
           function(server_name)
             local server = servers[server_name] or {}
@@ -907,7 +914,7 @@ require('lazy').setup({
         -- Disable "format_on_save lsp_fallback" for languages that don't
         -- have a well standardized coding style. You can add additional
         -- languages here or re-enable it for the disabled ones.
-        local disable_filetypes = { c = true, cpp = true }
+        local disable_filetypes = { c = true, cpp = true, java = true }
         if disable_filetypes[vim.bo[bufnr].filetype] then
           return nil
         end
@@ -1226,6 +1233,8 @@ require('lazy').setup({
   require 'kickstart.plugins.lint',
   -- require 'kickstart.plugins.autopairs',
   require 'kickstart.plugins.neo-tree',
+  require 'kickstart.plugins.jdtls',
+  require 'kickstart.plugins.spring-boot',
   -- require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
 
   -- NOTE: The import below can automatically add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
