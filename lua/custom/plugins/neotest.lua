@@ -1,3 +1,29 @@
+-- neotest-java only ever resolves a run position to a single Maven module (see
+-- its Project:find_module_by_filepath), so asking it to run a directory position
+-- that spans the whole reactor falls back to the aggregator root -- which jdtls
+-- never imports as a Java project, since the root pom.xml has no source of its
+-- own. Fan out into one run.run() call per submodule ourselves so "test all"
+-- still works for multi-module Maven repos.
+local function find_maven_submodules(root)
+  if vim.fn.filereadable(root .. '/pom.xml') == 0 then
+    return {}
+  end
+  local modules = {}
+  local function scan(dir)
+    for name, typ in vim.fs.dir(dir) do
+      if typ == 'directory' and name ~= 'target' and name ~= '.git' then
+        local path = dir .. '/' .. name
+        if vim.fn.filereadable(path .. '/pom.xml') == 1 then
+          table.insert(modules, path)
+        end
+        scan(path)
+      end
+    end
+  end
+  scan(root)
+  return modules
+end
+
 return {
   'nvim-neotest/neotest',
   dependencies = {
@@ -8,6 +34,13 @@ return {
     {
       'fredrikaverpil/neotest-golang',
       version = '*',
+    },
+    {
+      'rcasia/neotest-java',
+      ft = 'java',
+      dependencies = {
+        'mfussenegger/nvim-jdtls',
+      },
     },
   },
   keys = {
@@ -35,7 +68,15 @@ return {
     {
       '<leader>ta',
       function()
-        require('neotest').run.run(vim.uv.cwd())
+        local cwd = vim.uv.cwd()
+        local modules = find_maven_submodules(cwd)
+        if #modules == 0 then
+          require('neotest').run.run(cwd)
+        else
+          for _, dir in ipairs(modules) do
+            require('neotest').run.run(dir)
+          end
+        end
       end,
       desc = '[T]est [A]ll',
     },
@@ -83,6 +124,7 @@ return {
           -- Install with: go install gotest.tools/gotestsum@latest
           runner = vim.fn.executable 'gotestsum' == 1 and 'gotestsum' or 'go',
         },
+        require('neotest-java')(),
       },
     }
   end,

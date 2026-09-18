@@ -192,6 +192,12 @@ vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 -- Diagnostic keymaps
 vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
 
+-- [T]ab keymaps: jump to tabs 1-4
+vim.keymap.set('n', '<leader>tq', '1gt', { desc = 'Go to [T]ab 1' })
+vim.keymap.set('n', '<leader>tw', '2gt', { desc = 'Go to [T]ab 2' })
+vim.keymap.set('n', '<leader>te', '3gt', { desc = 'Go to [T]ab 3' })
+vim.keymap.set('n', '<leader>tr', '4gt', { desc = 'Go to [T]ab 4' })
+
 -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
 -- for people to discover. Otherwise, you normally need to press <C-\><C-n>, which
 -- is not what someone will guess without a bit more experience.
@@ -203,6 +209,20 @@ vim.keymap.set('t', '<Esc><Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' }
 vim.keymap.set('n', '<leader>p', '<cmd>Neotree reveal=true toggle=true<Cr>')
 
 -- [C]laude [P]rompt: open a small centered input, run `claude -p` on <CR>
+local claude_term
+
+local function run_claude_prompt(prompt)
+  local Terminal = require('toggleterm.terminal').Terminal
+  if claude_term then
+    pcall(claude_term.shutdown, claude_term)
+  end
+  claude_term = Terminal:new {
+    cmd = 'claude -p ' .. vim.fn.shellescape(prompt) .. " --tools ''",
+    close_on_exit = false,
+  }
+  claude_term:open()
+end
+
 local function open_claude_prompt(context_lines)
   local prefill = context_lines and vim.list_extend(vim.deepcopy(context_lines), { '' }) or {}
 
@@ -241,11 +261,7 @@ local function open_claude_prompt(context_lines)
     if prompt == '' then
       return
     end
-    vim.cmd 'botright 15split'
-    local term_buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_win_set_buf(0, term_buf)
-    vim.fn.termopen { 'claude', '-p', '--tools', '', prompt }
-    vim.cmd.startinsert()
+    run_claude_prompt(prompt)
   end
 
   vim.keymap.set({ 'i', 'n' }, '<CR>', submit, { buffer = buf })
@@ -296,6 +312,10 @@ vim.lsp.buf.format {
   end,
 }
 
+-- Treat C++ template-implementation files as cpp (LSP + treesitter both key off filetype).
+-- .hpp/.cpp/.ipp already resolve to 'cpp' via Neovim's builtin filetype.lua; only .tpp is missing.
+vim.filetype.add { extension = { tpp = 'cpp' } }
+
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
 
@@ -314,6 +334,13 @@ vim.api.nvim_create_autocmd('FileType', {
   pattern = '*',
   callback = function()
     pcall(vim.treesitter.start)
+  end,
+})
+
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = 'sql',
+  callback = function(event)
+    vim.keymap.set('v', '<leader>dr', ':DB<CR>', { buffer = event.buf, desc = '[D]adbod [R]un selection' })
   end,
 })
 
@@ -514,11 +541,9 @@ require('lazy').setup({
         -- You can put your default mappings / updates / etc. in here
         --  All the info you're looking for is in `:help telescope.setup()`
         --
-        -- defaults = {
-        --   mappings = {
-        --     i = { ['<c-enter>'] = 'to_fuzzy_refine' },
-        --   },
-        -- },
+        defaults = {
+          path_display = { truncate = true },
+        },
         -- pickers = {}
         extensions = {
           ['ui-select'] = {
@@ -1052,8 +1077,12 @@ require('lazy').setup({
       },
       sources = {
         default = { 'lsp', 'path', 'snippets', 'lazydev' },
+        per_filetype = {
+          sql = { 'dadbod', 'buffer' },
+        },
         providers = {
           lazydev = { module = 'lazydev.integrations.blink', score_offset = 100 },
+          dadbod = { name = 'Dadbod', module = 'vim_dadbod_completion.blink' },
           snippets = {
             min_keyword_length = 2,
             score_offset = 5,
@@ -1172,9 +1201,11 @@ require('lazy').setup({
       require('nvim-treesitter').install {
         'bash',
         'c',
+        'cpp',
         'diff',
         'go',
         'html',
+        'java',
         'lua',
         'luadoc',
         'markdown',
@@ -1236,7 +1267,7 @@ require('lazy').setup({
   require 'kickstart.plugins.neo-tree',
   require 'kickstart.plugins.jdtls',
   require 'kickstart.plugins.spring-boot',
-  -- require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
+  require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
 
   -- NOTE: The import below can automatically add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
   --    This is the easiest way to modularize your config.
@@ -1274,23 +1305,27 @@ require('lazy').setup({
         harpoon:list():next { ui_nav_wrap = true }
       end, { desc = '[H]arpoon [N]ext' }) --
 
-      vim.keymap.set('n', '<leader>hf', function()
-        harpoon:list():prev { ui_nav_wrap = true }
-      end, { desc = '[H]arpoon next' }) --
-
       -- League of Legends style binding, Q W E R for 1 2 3 4:
 
+      -- select() doesn't update list._index, so hn/hp (which rely on _index)
+      -- would ignore where hq/hw/he/hr last jumped to; sync it manually here.
+      local function goto_anchor(index)
+        local list = harpoon:list()
+        list:select(index)
+        list._index = index
+      end
+
       vim.keymap.set('n', '<leader>hq', function()
-        harpoon:list():select(1)
+        goto_anchor(1)
       end, { desc = '[H]arpoon goto anchor #1' })
       vim.keymap.set('n', '<leader>hw', function()
-        harpoon:list():select(2)
+        goto_anchor(2)
       end, { desc = '[H]arpoon goto anchor #2' })
       vim.keymap.set('n', '<leader>he', function()
-        harpoon:list():select(3)
+        goto_anchor(3)
       end, { desc = '[H]arpoon goto anchor #3' })
       vim.keymap.set('n', '<leader>hr', function()
-        harpoon:list():select(4)
+        goto_anchor(4)
       end, { desc = '[H]arpoon goto anchor #4' })
     end,
   },
@@ -1339,6 +1374,14 @@ require('lazy').setup({
     ---@module 'render-markdown'
     ---@type render.md.UserConfig
     opts = {},
+  },
+  { 'tpope/vim-dadbod' },
+  { 'kristijanhusak/vim-dadbod-completion' },
+  {
+    'kristijanhusak/vim-dadbod-ui',
+    init = function()
+      vim.g.db_ui_execute_on_save = 0
+    end,
   },
 }, {
   ui = {
